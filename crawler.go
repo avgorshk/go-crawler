@@ -1,40 +1,58 @@
 package main
 
-import "fmt"
-import "net/http"
-import "net/url"
-//import "os"
-import "io/ioutil"
-import "strings"
-import "strconv"
+import (
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strconv"
+	"strings"
+)
 
-var search_url string = "https://motolife-nn.ru/"
+//import "os"
+
+var searchURL string = "http://us-123fashion.simplesite.com/410906719"
 
 const (
+	// New URL
 	New = iota
+	// Valid URL
 	Valid = iota
+	// Invalid (bad) URL
 	Invalid = iota
 )
 
+// TreeNode is site URLs tree node
 type TreeNode struct {
-	name string
+	name   string
 	status int
 	childs [](*TreeNode)
 }
 
+// Name is a part of path for the URL
 func (t *TreeNode) Name() string {
 	return t.name
 }
 
+// SetName - method to set current part of path for the URL
 func (t *TreeNode) SetName(name string) {
 	t.name = name
 }
 
+// SetStatus - method to set URL status
 func (t *TreeNode) SetStatus(status int) {
 	t.status = status
 }
 
-func (t *TreeNode) Insert(path string) {
+// Insert - method to insert new URL or change its status
+func (t *TreeNode) Insert(path string, status int) {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		if t.status < status {
+			t.status = status
+		}
+		return
+	}
+
 	levels := strings.Split(path, "/")
 	if len(levels) == 0 {
 		return
@@ -44,13 +62,14 @@ func (t *TreeNode) Insert(path string) {
 	for i := 0; i < len(t.childs); i++ {
 		if t.childs[i].name == levels[0] {
 			target = i
+			break
 		}
 	}
 
 	if target == -1 {
 		node := new(TreeNode)
 		node.name = levels[0]
-		node.status = New
+		node.status = status
 		t.childs = append(t.childs, node)
 
 		if len(levels) > 1 {
@@ -58,7 +77,7 @@ func (t *TreeNode) Insert(path string) {
 			for i := 2; i < len(levels); i++ {
 				path = path + "/" + levels[i]
 			}
-			node.Insert(path)
+			node.Insert(path, status)
 		}
 	} else {
 		if len(levels) > 1 {
@@ -66,52 +85,78 @@ func (t *TreeNode) Insert(path string) {
 			for i := 2; i < len(levels); i++ {
 				path = path + "/" + levels[i]
 			}
-			t.childs[target].Insert(path)
+			t.childs[target].Insert(path, status)
+		} else {
+			if t.childs[target].status < status {
+				t.childs[target].status = status
+			}
 		}
 	}
 }
 
-func (t *TreeNode) Print(base_url string, level int) {
+// Print - method to print URL tree
+func (t *TreeNode) Print(baseURL string, level int) {
 	for i := 0; i < level; i++ {
 		fmt.Print("  ")
 	}
-	cur_url := strings.Trim(base_url, "/") + "/" + t.name
-	fmt.Println(cur_url + " [" + strconv.Itoa(t.status) + "]")
+	currentURL := strings.Trim(baseURL, "/") + "/" + t.name
+	fmt.Print(currentURL)
+	if t.status == New {
+		fmt.Println(" [new]")
+	}
+	if t.status == Valid {
+		fmt.Println(" [valid]")
+	}
+	if t.status == Invalid {
+		fmt.Println(" [invalid]")
+	}
 	for i := 0; i < len(t.childs); i++ {
-		t.childs[i].Print(cur_url, level + 1)
+		t.childs[i].Print(currentURL, level+1)
 	}
 }
 
-func (t *TreeNode) GetNewList(base_url string) []string {
+// GetNewList - method to get the list of new URLs in the tree
+func (t *TreeNode) GetNewList(baseURL string) []string {
 	var urls []string
-	cur_url := strings.Trim(base_url, "/") + "/" + t.name
+	currentURL := strings.Trim(baseURL, "/") + "/" + t.name
 	if t.status == New {
-		urls = append(urls, cur_url)
+		urls = append(urls, currentURL)
 	}
 	for i := 0; i < len(t.childs); i++ {
-		child_urls := t.childs[i].GetNewList(cur_url)
-		for j := 0; j < len(child_urls); j++ {
-			urls = append(urls, child_urls[j])
+		childURLs := t.childs[i].GetNewList(currentURL)
+		for j := 0; j < len(childURLs); j++ {
+			urls = append(urls, childURLs[j])
 		}
 	}
 	return urls
 }
 
-func parse(body string, target_host string) []string {
+func belongToTargetHost(url string, targetHost string) bool {
+	return strings.Contains(url, targetHost)
+}
+
+func getPath(url string, targetHost string) string {
+	pathIndex := strings.Index(url, targetHost)
+	if pathIndex == -1 {
+		return ""
+	}
+	return url[pathIndex+len(targetHost):]
+}
+
+func parse(body string, targetHost string) []string {
 	var urls []string
 
 	lines := strings.Split(body, "\n")
 	for i := 0; i < len(lines); i++ {
 		index := strings.Index(lines[i], "href=")
 		if index != -1 {
-			href := lines[i][index + len("href="):]
+			href := lines[i][index+len("href="):]
 			if href[0] == '"' {
 				start := 1
 				end := strings.Index(href[start:], "\"")
-				if (end > start) {
-					link := href[start:end]
-					u, err := url.Parse(link)
-					if (err == nil && u.Host == target_host) {
+				if end > start {
+					link := href[start : end+1]
+					if belongToTargetHost(link, targetHost) {
 						urls = append(urls, link)
 					}
 				}
@@ -137,51 +182,39 @@ func grab(url string) string {
 }
 
 func main() {
-	base_url := strings.Trim(search_url, "/")
-	/*u, err := url.Parse(search_url)
-	if (err != nil) {
-		fmt.Println(err)
-		return
-	}
-	target_host := u.Host*/
+	baseURL := strings.Trim(searchURL, "/")
+	targetHost := baseURL
 
 	tree := new(TreeNode)
 	tree.SetName("")
 	tree.SetStatus(New)
 
-	tree.Insert("aaa/bbb")
-	tree.Insert("aaa/ccc")
-
-	tree.Print(base_url, 0)
-
-	urls := tree.GetNewList(base_url)
-	for i := 0; i < len(urls); i++ {
-		fmt.Println(urls[i])
-	}
-
-	return
-
-	/*for true {
-		nodes := tree.GetNewList()
-		if len(nodes) == 0 {
+	step := 0
+	for true {
+		newURLs := tree.GetNewList(baseURL)
+		if len(newURLs) == 0 {
 			break
 		}
 
-		for i := 0; i < len(nodes); i++ {
-			cur_url := base_url + nodes[i].Name()
-			body := grab(cur_url)
+		fmt.Print("Step " + strconv.Itoa(step) + " (" + strconv.Itoa(len(newURLs)) + " new URLs)")
+
+		for i := 0; i < len(newURLs); i++ {
+			newURL := newURLs[i]
+			body := grab(newURL)
 			if body == "" {
-				nodes[i].SetStatus(Invalid)
+				tree.Insert(getPath(newURL, targetHost), Invalid)
 			} else {
-				nodes[i].SetStatus(Valid)
-				urls := parse(body, target_host)
+				tree.Insert(getPath(newURL, targetHost), Valid)
+				urls := parse(body, targetHost)
 				for j := 0; j < len(urls); j++ {
-					u, err = url.Parse(urls[j])
-					if err == nil {
-						tree.Insert(strings.Trim(u.Path, "/"))
-					}
+					tree.Insert(getPath(urls[j], targetHost), New)
 				}
 			}
+			fmt.Print(".")
 		}
-	}*/
+		fmt.Println()
+		step = step + 1
+	}
+
+	tree.Print(baseURL, 0)
 }
