@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
-
-//import "os"
-
-var searchURL string = "http://us-123fashion.simplesite.com/410906719"
 
 const (
 	// New URL
@@ -167,6 +165,23 @@ func parse(body string, targetHost string) []string {
 	return urls
 }
 
+func retrieveURLs(url string, targetHost string, urls *([]string)) bool {
+	body := grab(url)
+	if body == "" {
+		return false
+	}
+
+	foundURLs := parse(body, targetHost)
+	for i := 0; i < len(foundURLs); i++ {
+		*urls = append(*urls, foundURLs[i])
+	}
+	return true
+}
+
+func parallelRetrieveURLs(url string, targetHost string, urls *([]string), result chan bool) {
+	result <- retrieveURLs(url, targetHost, urls)
+}
+
 func grab(url string) string {
 	resp, err := http.Get(url)
 	if err != nil {
@@ -182,12 +197,22 @@ func grab(url string) string {
 }
 
 func main() {
-	baseURL := strings.Trim(searchURL, "/")
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: crawler.exe <URL>")
+		return
+	}
+
+	baseURL := strings.Trim(os.Args[1], "/")
 	targetHost := baseURL
 
 	tree := new(TreeNode)
 	tree.SetName("")
 	tree.SetStatus(New)
+
+	const threadCount = 8
+	const maxURLs = 256
+
+	var start = time.Now()
 
 	step := 0
 	for true {
@@ -198,23 +223,57 @@ func main() {
 
 		fmt.Print("Step " + strconv.Itoa(step) + " (" + strconv.Itoa(len(newURLs)) + " new URLs)")
 
-		for i := 0; i < len(newURLs); i++ {
-			newURL := newURLs[i]
-			body := grab(newURL)
-			if body == "" {
-				tree.Insert(getPath(newURL, targetHost), Invalid)
-			} else {
-				tree.Insert(getPath(newURL, targetHost), Valid)
-				urls := parse(body, targetHost)
-				for j := 0; j < len(urls); j++ {
-					tree.Insert(getPath(urls[j], targetHost), New)
+		var threadURLs [threadCount]([]string)
+		resChan := make(chan bool)
+
+		i := 0
+		for i < len(newURLs) {
+			for t := 0; t < threadCount; t++ {
+				if i+t < len(newURLs) {
+					go parallelRetrieveURLs(newURLs[i+t], targetHost, &(threadURLs[t]), resChan)
 				}
 			}
+
+			for t := 0; t < threadCount; t++ {
+				if i+t < len(newURLs) {
+					_ = <-resChan
+				}
+			}
+
+			for t := 0; t < threadCount; t++ {
+				if i+t < len(newURLs) {
+					if len(threadURLs[t]) == 0 {
+						tree.Insert(getPath(newURLs[i+t], targetHost), Invalid)
+					} else {
+						tree.Insert(getPath(newURLs[i+t], targetHost), Valid)
+						for j := 0; j < len(threadURLs[t]); j++ {
+							tree.Insert(getPath(threadURLs[t][j], targetHost), New)
+						}
+					}
+					threadURLs[t] = nil
+				}
+			}
+
 			fmt.Print(".")
+			i = i + threadCount
+
+			if i > maxURLs {
+				break
+			}
 		}
+
 		fmt.Println()
 		step = step + 1
+
+		if i > maxURLs {
+			break
+		}
 	}
 
+	duration := time.Since(start)
+
+	fmt.Println("===== Site Structure =====")
 	tree.Print(baseURL, 0)
+	fmt.Println("==========================")
+	fmt.Println(duration)
 }
